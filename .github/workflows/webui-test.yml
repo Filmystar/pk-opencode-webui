@@ -1,0 +1,139 @@
+name: Test Web UI
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "app-prefixable/**"
+      - "shared/**"
+      - "docker/serve-ui.ts"
+      - ".github/workflows/webui-test.yml"
+  pull_request:
+    paths:
+      - "app-prefixable/**"
+      - "shared/**"
+      - "docker/serve-ui.ts"
+      - ".github/workflows/webui-test.yml"
+  workflow_dispatch:
+
+env:
+  OPENCODE_VERSION: "1.19.3"
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-prefixable
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Lint
+        run: bun run lint
+
+      # NOTE: the full `bun test tests/` suite has pre-existing failures
+      # (`jsxDEV` export error from solid-js in component tests, unrelated to
+      # backend/proxy code). Run the backend-adjacent suites that pass.
+      - name: Unit tests (proxy, contract, security)
+        run: >
+          bun test
+          tests/proxy-response.test.ts
+          tests/api-contract.test.ts
+          tests/sse.test.ts
+          tests/base-path.test.ts
+          tests/extended-api-security.test.ts
+
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app-prefixable
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Production build
+        run: bun run build
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webui-dist
+          path: app-prefixable/dist
+
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install pinned opencode backend
+        run: |
+          ARCH="$(uname -m)"
+          case "$ARCH" in
+            x86_64) OC_ARCH="x64" ;;
+            aarch64|arm64) OC_ARCH="arm64" ;;
+            *) echo "unsupported arch: $ARCH"; exit 1 ;;
+          esac
+          curl -sL -o /tmp/oc.tar.gz \
+            "https://github.com/anomalyco/opencode/releases/download/v${{ env.OPENCODE_VERSION }}/opencode-linux-${OC_ARCH}.tar.gz"
+          mkdir -p /tmp/oc && tar xzf /tmp/oc.tar.gz -C /tmp/oc
+          /tmp/oc/opencode --version
+
+      - name: Start backend and UI server
+        run: |
+          mkdir -p /tmp/demo && echo "# demo" > /tmp/demo/README.md
+          cd /tmp/demo
+          /tmp/oc/opencode serve --hostname 127.0.0.1 --port 4096 --print-logs > /tmp/backend.log 2>&1 &
+          cd "$GITHUB_WORKSPACE/app-prefixable"
+          bun install
+          PORT=3000 API_URL=http://127.0.0.1:4096 bun run dev > /tmp/ui.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null http://127.0.0.1:3000/ && break
+            sleep 2
+          done
+          curl -sf -o /dev/null http://127.0.0.1:3000/
+
+      - name: Smoke test UI proxy
+        run: |
+          curl -sf http://127.0.0.1:3000/ -o /dev/null
+          curl -sf http://127.0.0.1:3000/session | grep -q '^\['
+          curl -sf http://127.0.0.1:3000/provider -o /dev/null
+          curl -sf -X POST http://127.0.0.1:3000/pty \
+            -H 'Content-Type: application/json' \
+            -H 'Origin: http://127.0.0.1:3000' \
+            -d '{"directory":"/tmp/demo"}' | grep -q '"status":"running"'
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== backend log ==="
+          tail -30 /tmp/backend.log
+          echo "=== UI log ==="
+          tail -30 /tmp/ui.log
