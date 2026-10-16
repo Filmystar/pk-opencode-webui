@@ -1,7 +1,7 @@
 import { watch } from "fs"
 import { handleExtendedEndpoint, isApiPath, isMutation, isSameOriginRequest } from "../shared/extended-api"
 import { normalizeRequestPath, prefixStrippedAllowed } from "../shared/base-path"
-import { isEventStreamPath, normalizeProxiedResponse, proxyEventResponse, serializeScriptData, stripHopByHopHeaders } from "../shared/proxy"
+import { forwardClose, isEventStreamPath, normalizeProxiedResponse, proxyEventResponse, serializeScriptData, stripHopByHopHeaders } from "../shared/proxy"
 
 const BASE_PATH = process.env.BASE_PATH || "/"
 const PORT = parseInt(process.env.PORT || "3000", 10)
@@ -214,9 +214,7 @@ const server = Bun.serve<{ target: string }>({
       backend.addEventListener("close", (event) => {
         console.log("[Proxy] Backend WebSocket closed:", event.code)
         wsConnections.delete(ws)
-        if (ws.readyState === 1) {
-          ws.close(event.code, event.reason)
-        }
+        forwardClose(ws, event.code, event.reason)
       })
 
       backend.addEventListener("error", (e) => {
@@ -236,7 +234,7 @@ const server = Bun.serve<{ target: string }>({
       console.log("[Proxy] Client WebSocket closed:", code)
       const backend = wsConnections.get(ws)
       if (backend) {
-        backend.close(code, reason)
+        forwardClose(backend, code, reason)
         wsConnections.delete(ws)
       }
     },

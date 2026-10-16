@@ -50,6 +50,15 @@ export function isEventStreamPath(path: string) {
   return path === "/event" || path === "/global/event"
 }
 
+export function forwardClose(socket: { readyState: number; close(code?: number, reason?: string): void }, code: number, reason?: string) {
+  if (socket.readyState !== 1) return
+  if (code === 1000 || code === 1001 || (code >= 1002 && code <= 1003) || (code >= 1007 && code <= 1014) || (code >= 3000 && code <= 4999)) {
+    socket.close(code, reason)
+    return
+  }
+  socket.close(1000, reason)
+}
+
 export function proxyEventResponse(response: Response, signal: AbortSignal, upstream: AbortController) {
   if (!response.body) return normalizeProxiedResponse(response)
   const reader = response.body.getReader()

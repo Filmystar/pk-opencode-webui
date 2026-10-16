@@ -11,7 +11,7 @@
 
 import { handleExtendedEndpoint, isApiPath, isMutation, isSameOriginRequest } from "../shared/extended-api"
 import { normalizeRequestPath, prefixStrippedAllowed } from "../shared/base-path"
-import { isEventStreamPath, normalizeProxiedResponse, proxyEventResponse, serializeScriptData, stripHopByHopHeaders } from "../shared/proxy"
+import { forwardClose, isEventStreamPath, normalizeProxiedResponse, proxyEventResponse, serializeScriptData, stripHopByHopHeaders } from "../shared/proxy"
 
 const BASE_PATH = process.env.NB_PREFIX || process.env.BASE_PATH || "/"
 const PORT = parseInt(process.env.PORT || "8080", 10)
@@ -324,9 +324,7 @@ const server = Bun.serve<{ path: string; search: string }>({
 
       backend.addEventListener("close", (event) => {
         console.log("[Proxy] Backend WebSocket closed:", event.code, event.reason)
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.close(event.code, event.reason)
-        }
+        forwardClose(ws, event.code, event.reason)
       })
 
       backend.addEventListener("error", (error) => {
@@ -351,9 +349,7 @@ const server = Bun.serve<{ path: string; search: string }>({
     close(ws, code, reason) {
       console.log("[Proxy] Client WebSocket closed:", code, reason)
       const backend = backendConnections.get(ws)
-      if (backend?.readyState === WebSocket.OPEN) {
-        backend.close(code, reason)
-      }
+      if (backend) forwardClose(backend, code, reason)
       backendConnections.delete(ws)
     },
   },
